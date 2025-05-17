@@ -6,6 +6,7 @@
 #include "hardware/adc.h"    // Biblioteca da Raspberry Pi Pico para manipulação do conversor ADC
 #include "pico/cyw43_arch.h" // Biblioteca para arquitetura Wi-Fi da Pico com CYW43
 #include "hardware/pwm.h"    // Biblioteca da Raspberry Pi Pico para manipulação de PWM (modulação por largura de pulso)
+#include "pico/bootrom.h"
 
 #include "lwip/pbuf.h"  // Lightweight IP stack - manipulação de buffers de pacotes de rede
 #include "lwip/tcp.h"   // Lightweight IP stack - fornece funções e estruturas para trabalhar com o protocolo TCP
@@ -13,20 +14,20 @@
 
 // Credenciais WIFI - Tome cuidado se publicar no github!
 #include "SSIDPASSWORD.h" // Arquivo de cabeçalho com as credenciais Wi-Fi
-//#define WIFI_SSID ""
-//#define WIFI_PASSWORD ""
-// Definição dos pinos dos LEDs
+// #define WIFI_SSID ""
+// #define WIFI_PASSWORD ""
+//  Definição dos pinos dos LEDs
 #define LED_PIN CYW43_WL_GPIO_LED_PIN // GPIO do CI CYW43
 #define LED_BLUE_PIN 12               // GPIO12 - LED azul
 #define LED_GREEN_PIN 11              // GPIO11 - LED verde
 #define LED_RED_PIN 13                // GPIO13 - LED vermelho
 #define BUZZER_PIN 10                 // GPIO10 - Buzzer
 #define JOYSTICK_X_PIN 27
-
-static int fan_speed = 0;                // Velocidade do ventilador (0-255)
-static bool fan_on = false;              // Estado do ventilador
-static bool fan_speed_from_http = false; // Indica se a velocidade foi ajustada via HTTP
-
+#define PIN_BUTTON_B 6
+static int fan_speed = 0;     // Velocidade do ventilador (0-255)
+static bool fan_on = false;   // Estado do ventilador
+static bool auto_fan = false; // Indica se a velocidade foi ajustada via HTTP
+float temp_c = 25.0f;
 // Função de callback ao aceitar conexões TCP
 static err_t tcp_server_accept(void *arg, struct tcp_pcb *newpcb, err_t err);
 
@@ -35,6 +36,7 @@ static err_t tcp_server_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, er
 
 // Tratamento do request do usuário
 void user_request(char **request);
+static void gpio_irq_handler(uint gpio, uint32_t events);
 
 // Função principal
 int main()
@@ -43,6 +45,10 @@ int main()
     stdio_init_all();
     adc_init();
     adc_gpio_init(JOYSTICK_X_PIN);
+    gpio_init(PIN_BUTTON_B);
+    gpio_set_dir(PIN_BUTTON_B, GPIO_IN);
+    gpio_pull_up(PIN_BUTTON_B);
+    gpio_set_irq_enabled_with_callback(PIN_BUTTON_B, GPIO_IRQ_EDGE_FALL, 1, &gpio_irq_handler);
 
     // Inicializa a arquitetura do cyw43
     while (cyw43_arch_init())
@@ -51,9 +57,6 @@ int main()
         sleep_ms(100);
         return -1;
     }
-
-    // GPIO do CI CYW43 em nível baixo
-    cyw43_arch_gpio_put(LED_PIN, 0);
 
     // Ativa o Wi-Fi no modo Station, de modo a que possam ser feitas ligações a outros pontos de acesso Wi-Fi.
     cyw43_arch_enable_sta_mode();
@@ -107,26 +110,27 @@ int main()
     pwm_set_clkdiv(slice_num, 4.0);
     pwm_set_wrap(slice_num, 4095);
     pwm_set_enabled(slice_num, true);
-
     // Inicializa o conversor ADC
     adc_init();
+    adc_select_input(1); // Seleciona o ADC do eixo X do joystick
     while (true)
     {
         cyw43_arch_poll(); // Necessário para manter o Wi-Fi ativo
-
+        
         if (fan_on)
         {
-            if (!fan_speed_from_http) // Apenas ajusta pelo joystick se não foi ajustado via HTTP
+            if (auto_fan)
             {
-                adc_select_input(1); // Seleciona o ADC do eixo X do joystick
+                
                 uint16_t raw_value = adc_read();
                 fan_speed = raw_value / 16; // Converte para 0-255
+                temp_c = (fan_speed / 255.0f) * 50.0f;
             }
 
             // Ajusta a frequência e o volume do buzzer com base na velocidade
             uint slice_num = pwm_gpio_to_slice_num(BUZZER_PIN);
             uint frequency = 300 + (fan_speed * 2); // Frequência varia de 100 Hz a 2600 Hz
-            uint wrap = 10000000 / frequency;        // Calcula o wrap com base na frequência
+            uint wrap = 10000000 / frequency;       // Calcula o wrap com base na frequência
             if (wrap < 100)
                 wrap = 100; // Limita o valor mínimo do wrap
             pwm_set_wrap(slice_num, wrap);
@@ -154,6 +158,13 @@ int main()
 // Função de callback ao aceitar conexões TCP
 static err_t tcp_server_accept(void *arg, struct tcp_pcb *newpcb, err_t err)
 {
+    if (err != ERR_OK || !newpcb)
+    {
+        printf("Accept Erro %d\n", err);
+        return ERR_VAL;
+    }
+    printf("Nova conexao TCP aceita do IP: %s\n", ipaddr_ntoa(&newpcb->remote_ip));
+    tcp_arg(newpcb, NULL);
     tcp_recv(newpcb, tcp_server_recv);
     return ERR_OK;
 }
@@ -170,21 +181,43 @@ void user_request(char **request)
     {
         fan_on = false;
         fan_speed = 0;
-        fan_speed_from_http = false; // Reseta a origem da velocidade
     }
     else if (strstr(*request, "GET /fan_speed=") != NULL)
     {
         char *speed_str = strstr(*request, "fan_speed=") + 10;
-        fan_speed = atoi(speed_str);
-        if (fan_speed > 255)
-            fan_speed = 255;
-        fan_speed_from_http = true; // Marca que a velocidade foi ajustada via HTTP
+        if (speed_str && isdigit((unsigned char)speed_str[0]))
+        {
+            fan_speed = atoi(speed_str);
+            if (fan_speed > 255)
+                fan_speed = 255;
+        }
     }
+    else if (strstr(*request, "GET /auto_fan_on") != NULL)
+    {
+        auto_fan = true;
+    }
+    else if (strstr(*request, "GET /auto_fan_off") != NULL)
+    {
+        auto_fan = false;
+    }
+    else if (strstr(*request, "GET /status") != NULL)
+    {
+        
+    }
+
 }
 
 // Função de callback para processar requisições HTTP
 static err_t tcp_server_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err)
 {
+    if (err != ERR_OK && err != ERR_ABRT)
+    {
+        printf("Recv Erro %d\n", err);
+        if (p)
+            pbuf_free(p);
+        tcp_close(tpcb);
+        return err;
+    }
     if (!p)
     {
         tcp_close(tpcb);
@@ -203,21 +236,63 @@ static err_t tcp_server_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, er
     user_request(&request);
 
     // Cria a resposta HTML
-    char html[1024];
+    char html[4096];
     // Instruções html do webserver
-    snprintf(html, sizeof(html),
-             "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n"
-             "<!DOCTYPE html><html><head><title>Controle de Ventilacao</title><style>"
-             "body{font-family:Arial;text-align:center;margin-top:50px;}button,input[type='range'],input[type='number']{font-size:20px;margin:10px;}"
-             "</style><script>let selectedSpeed=%d;function setSpeed(value){selectedSpeed=value;document.getElementById('speed_display').innerText=value;}"
-             "function sendSpeed(){fetch('/fan_speed='+selectedSpeed);alert('Velocidade enviada: '+selectedSpeed);}</script></head>"
-             "<body><h1>Controle de Ventilacao</h1><p>Estado:%s</p><p>Velocidade:<span id='speed_display'>%d</span></p>"
-             "<form action=\"/fan_on\"><button>Ligar Ventilador</button></form>"
-             "<form action=\"/fan_off\"><button>Desligar Ventilador</button></form>"
-             "<input type=\"range\" min=\"0\" max=\"255\" value=\"%d\" oninput=\"setSpeed(this.value)\"><br>"
-             "<button onclick=\"sendSpeed()\">Enviar Velocidade</button></body></html>",
-             fan_speed, fan_on ? "Ligado" : "Desligado", fan_speed, fan_speed);
-    // Escreve dados para envio (mas não os envia imediatamente).
+    if (auto_fan)
+    {
+        snprintf(html, sizeof(html),
+                 "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n"
+                 "<!DOCTYPE html><html><head><title>Controle de Ventilacao</title><style>"
+                 "body{font-family:Arial;text-align:center;margin-top:50px;}button,input[type='range'],input[type='number']{font-size:20px;margin:10px;}"
+                 "</style>"
+                 "<script>"
+                 "function atualizarValores(){"
+                 "fetch('/status').then(r=>r.json()).then(d=>{"
+                 "document.getElementById('temp_display').innerText=d.temp.toFixed(1);"
+                 "document.getElementById('speed_display').innerText=d.speed;"
+                 "});"
+                 "}"
+                 "</script>"
+                 "</head>"
+                 "<body><h1>Controle de Ventilacao</h1>"
+                 "<p>Estado: %s</p>"
+                 "<p>Modo automatico: %s</p>"
+                 "<form action=\"/fan_on\"><button>Ligar Ventilador</button></form>"
+                 "<form action=\"/fan_off\"><button>Desligar Ventilador</button></form>"
+                 "<form action=\"/auto_fan_off\"><button>Desativar Ventilacao Automatica</button></form>"
+                 "<p>Temperatura simulada: <b><span id='temp_display'>%.1f</span> &deg;C</b></p>"
+                 "<p>Velocidade automatica: <span id='speed_display'>%d</span></p>"
+                 "<form action=\"/status\"> <button>Atualizar Valores</button>"
+                 "</body></html>",
+                 fan_on ? "Ligado" : "Desligado",
+                 "Ativado",
+                 temp_c, fan_speed);
+    }
+    else
+    {
+        snprintf(html, sizeof(html),
+                 "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n"
+                 "<!DOCTYPE html><html><head><title>Controle de Ventilacao</title><style>"
+                 "body{font-family:Arial;text-align:center;margin-top:50px;}button,input[type='range'],input[type='number']{font-size:20px;margin:10px;}"
+                 "</style>"
+                 "<script>let selectedSpeed=0;"
+                 "function setSpeed(value){selectedSpeed=value;document.getElementById('speed_display').innerText=value;}"
+                 "function sendSpeed(){fetch('/fan_speed='+selectedSpeed);alert('Velocidade enviada: '+selectedSpeed);}</script></head>"
+                 "<body><h1>Controle de Ventilacao</h1>"
+                 "<p>Estado: %s</p>"
+                 "<p>Modo automatico: %s</p>"
+                 "<form action=\"/fan_on\"><button>Ligar Ventilador</button></form>"
+                 "<form action=\"/fan_off\"><button>Desligar Ventilador</button></form>"
+                 "<form action=\"/auto_fan_on\"><button>Ativar Ventilacao Automatica</button></form>"
+                 "<p>Velocidade: <span id='speed_display'>%d</span></p>"
+                 "<input type=\"range\" min=\"0\" max=\"255\" value=\"%d\" oninput=\"setSpeed(this.value)\"><br>"
+                 "<button onclick=\"sendSpeed()\" type=\"button\">Enviar Velocidade</button>"
+                 "</body></html>",
+                 fan_on ? "Ligado" : "Desligado",
+                 "Desativado",
+                 fan_speed, fan_speed);
+    }
+    // ...existing code...// ...existing code...// Escreve dados para envio (mas não os envia imediatamente).
     tcp_write(tpcb, html, strlen(html), TCP_WRITE_FLAG_COPY);
 
     // Envia a mensagem
@@ -230,4 +305,13 @@ static err_t tcp_server_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, er
     pbuf_free(p);
 
     return ERR_OK;
+}
+
+static void gpio_irq_handler(uint gpio, uint32_t events)
+{
+    if (gpio == PIN_BUTTON_B)
+    {
+        printf("Botão B pressionado - Reiniciando para BOOTSEL\n");
+        reset_usb_boot(0, 0);
+    }
 }

@@ -1,18 +1,27 @@
 #ifndef LWIPOPTS_H
 #define LWIPOPTS_H
 
+
+#ifdef TCP_MISS
+#define TCP_MISS 1460
+#endif
+#define TCP_SND_BUF_SIZE (4 * TCP_MSS)
 // Configuração mínima para lwIP
+#define RESQUEST_BUFFER_SIZE 2048
+#define MEM_LIBC_MALLOC 0
+#define MEMP_MEM_MALLOC 0
+
 #define NO_SYS 1
 #define LWIP_SOCKET 0
 #define LWIP_NETCONN 0
 #define LWIP_TCP 1
 #define LWIP_UDP 1
 #define MEM_ALIGNMENT 4
-#define MEM_SIZE 4096
+#define MEM_SIZE (32 * 1024) // 32 KB de memória para o heap
 #define MEMP_NUM_PBUF 16
-#define PBUF_POOL_SIZE 16               // Ajuste conforme necessário
+#define PBUF_POOL_SIZE 32               // Ajuste conforme necessário
 #define MEMP_NUM_UDP_PCB 4
-#define MEMP_NUM_TCP_PCB 4
+#define MEMP_NUM_TCP_PCB 10
 #define MEMP_NUM_TCP_SEG 16
 #define LWIP_IPV4 1
 #define LWIP_ICMP 1
