@@ -246,12 +246,8 @@ static err_t tcp_server_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, er
                  "body{font-family:Arial;text-align:center;margin-top:50px;}button,input[type='range'],input[type='number']{font-size:20px;margin:10px;}"
                  "</style>"
                  "<script>"
-                 "function atualizarValores(){"
-                 "fetch('/status').then(r=>r.json()).then(d=>{"
-                 "document.getElementById('temp_display').innerText=d.temp.toFixed(1);"
-                 "document.getElementById('speed_display').innerText=d.speed;"
-                 "});"
-                 "}"
+                 "function atualizarPagina(){window.location.href='/status';}"
+                 "setInterval(atualizarPagina, 2000);" // Atualiza a cada 2 segundos
                  "</script>"
                  "</head>"
                  "<body><h1>Controle de Ventilacao</h1>"
@@ -262,7 +258,6 @@ static err_t tcp_server_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, er
                  "<form action=\"/auto_fan_off\"><button>Desativar Ventilacao Automatica</button></form>"
                  "<p>Temperatura simulada: <b><span id='temp_display'>%.1f</span> &deg;C</b></p>"
                  "<p>Velocidade automatica: <span id='speed_display'>%d</span></p>"
-                 "<form action=\"/status\"> <button>Atualizar Valores</button>"
                  "</body></html>",
                  fan_on ? "Ligado" : "Desligado",
                  "Ativado",
