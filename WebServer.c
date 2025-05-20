@@ -12,8 +12,7 @@
 #include "lwip/tcp.h"   // Lightweight IP stack - fornece funções e estruturas para trabalhar com o protocolo TCP
 #include "lwip/netif.h" // Lightweight IP stack - fornece funções e estruturas para trabalhar com interfaces de rede (netif)
 
-// Credenciais WIFI - Tome cuidado se publicar no github!
-#include "SSIDPASSWORD.h" // Arquivo de cabeçalho com as credenciais Wi-Fi
+#include "SSIDPASSWORD.h" // Arquivo de cabeçalho com as credenciais Wi-Fi, caso necessário, criar arquivo ou definir as credenciais diretamente no código
 // #define WIFI_SSID ""
 // #define WIFI_PASSWORD ""
 //  Definição dos pinos dos LEDs
